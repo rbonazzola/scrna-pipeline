@@ -1,0 +1,368 @@
+---
+title: "Pipeline de scRNA-Seq"
+# author: "rbonazzola"
+date: "2024-11-20"
+output: html_document
+---
+  
+```{r setup, include=FALSE}
+library(dplyr)
+library(Seurat)
+library(ggplot2)
+library(patchwork)
+library(ggpubr)
+library(monocle3)
+library(SeuratWrappers)
+library(ff)
+
+setwd("~/Postdoc/scRNA/pipeline_seurat_monocle/")
+source(file="utils.R")
+
+options(
+  future.globals.maxSize = 3 * 1024^3
+)
+```
+
+```{r marker_genes, echo=FALSE}
+## list of cell type markers
+Guard_cell = c('GC-AT5G25980','GC-AT5G48485','GC-AT1G62480','GC-AT3G16400','GC-AT2G15830','GC-AT1G71050','GC-AT2G19810','GC-AT4G37870','GC-AT5G66400','GC-AT3G23730','GC-AT3G24140','GC-AT5G66440','GC-AT3G56620','GC-AT4G37430','GC-AT2G34655','GC-AT2G47260','GC-AT5G42970','GC-AT3G58640','GC-AT1G23170','GC-AT1G29050')
+Companion_cell = c('CC-AT1G23130','CC-AT1G67865','CC-AT1G64370','CC-AT4G19840','CC-AT2G18328','CC-AT5G18600','CC-AT1G67860','CC-AT1G67870','CC-AT5G45350','CC-AT2G32870','CC-AT5G04080','CC-AT5G22090','CC-AT4G00780','CC-AT1G07610','CC-AT4G16008','CC-AT1G06830','CC-AT2G16740','CC-AT2G30540','CC-AT4G16000','CC-AT4G15690')
+Epidermia_cell = c('EC-AT2G38540','EC-AT1G66100','EC-AT1G09310','EC-AT3G51600','EC-AT5G25610','EC-AT5G44020','EC-AT3G16370','EC-AT2G27385','EC-AT3G26450','EC-AT1G68530','EC-AT2G32690','EC-AT4G04840','EC-AT4G23670','EC-AT1G29660','EC-AT5G13930','EC-AT5G64770','EC-AT4G39330','EC-AT1G29670','EC-AT1G55260','EC-AT2G26250')
+Mesophyl_cell = c('MC-AT2G10940','MC-AT5G38430','MC-AT3G08940','MC-AT1G72610','MC-AT3G27690','MC-AT2G05070','MC-AT1G12090','MC-AT1G29910','MC-AT2G34420','MC-AT2G34430','MC-AT1G15820','MC-AT2G21330','MC-AT1G06680','MC-AT3G59400','MC-AT2G05100','MC-AT1G67090','MC-AT3G54890','MC-AT5G66570','MC-AT4G38970','MC-AT1G44575')
+Mesophyl_cell_2 = c('MC2-AT1G18740','MC2-AT1G74930','MC2-AT1G27730','MC2-AT2G44840','MC2-AT1G80840','MC2-AT3G44260','MC2-AT5G12030','MC2-AT5G12020','MC2-AT1G74450','MC2-AT4G24570','MC2-AT3G56880','MC2-AT1G71000','MC2-AT5G66650','MC2-AT4G27652','MC2-AT3G46230','MC2-AT3G12580','MC2-AT3G55980','MC2-AT4G34410','MC2-AT5G52050','MC2-AT1G07400')
+Hydathode_cell = c('HC-AT3G16670','HC-AT3G05730','HC-AT3G16660','HC-AT1G56710','HC-AT3G09330','HC-AT1G22900','HC-AT1G08090','HC-AT4G36260','HC-AT4G32950','HC-AT2G43610','HC-AT4G23550','HC-AT2G19990','HC-AT1G62510','HC-AT2G33175','HC-AT2G38940','HC-AT3G14060','HC-AT3G60700','HC-AT1G19610','HC-AT5G60910')#,'HC-AT1G08757')
+S_cell = c('SC-AT1G78370','SC-AT3G19710','SC-AT2G30860','SC-AT1G80520','SC-AT2G43100','SC-AT5G23010','SC-AT5G02380','SC-AT2G22330','SC-AT3G14990','SC-AT2G46650','SC-AT2G26690','SC-AT5G14200','SC-AT2G22860','SC-AT5G01600','SC-AT4G14040','SC-AT3G11930','SC-AT2G37170','SC-AT3G15450','SC-AT5G03610','SC-AT1G11580')
+```
+
+Presentación: https://docs.google.com/presentation/d/1oSvykD7S7BEjlLM8uYerDxKCl8mox-m_vJP4bQ0a77E/edit#slide=id.g3102eec6474_0_60
+
+Tenemos como referencia el código de https://github.com/Bastien-mva/pipeline_seurat_monocle, que corresponden al paper: _Cell specialization and coordination in Arabidopsis leaves upon pathogenic attack revealed by scRNA-seq_ (https://pubmed.ncbi.nlm.nih.gov/37644724/)
+
+### Pipeline
+**Input:** Una matriz de $F\times N$, donde $F$ es el número de features (genes) y $N$ es el número de células. Las células se identifican mediante un código de barras.
+
+- Se leen los datos (10X Genomics) para tres réplicas, los cuales se concatenan.
+- Se descartan genes presentes en muy pocas células y células con pocas cuentas de genes.
+- Se descartan células de mala calidad, determinado en base a la proporción de genes cloroplásticos y mitocondriales.
+- Encontrar features variables (genes cuya expresión varía a través de las células).
+- Hacer PCA sobre las features variables
+- Hacer UMAP sobre 30 PCs (es sólo para fines de visualización).
+- Hacer clustering.
+  - Encontrar pares de células vecinas.
+  - Se usan SNN (shared nearest neighbors).
+- Mapear clusters a tipos celulares (esto no lo hacemos aquí).
+
+```{r load_data, cache.lazy=TRUE}
+start_time <- Sys.time()
+
+# name of the output pdf file and output rds file
+NAME_REP      <- "WT_rep123"
+list_reps <- list("rep_1", "rep_2", "rep_3")
+
+DATA_DIR      <- "."
+RDS_FILENAME  <- glue::glue("output/sc_full{NAME_REP}.rds")
+# VERWRITE_RDS <- TRUE
+sc_full <- readRDS(RDS_FILENAME)
+
+end_time <- Sys.time()
+execution_time <- end_time - start_time
+message("Execution time: ", execution_time)
+```
+
+```{r barcodes, cache.lazy=TRUE}
+print(colnames(sc_full)[1:50])
+```
+
+```{r, genenames}
+print(rownames(sc_full)[1:50])
+```
+
+Filtramos células con muchos genes cloroplásticos y mitocondriales:
+```{r, eval=FALSE}
+sc_full[["percent.pt"]] <- PercentageFeatureSet(sc_full, pattern="^ATCG")
+sc_full[["percent.mt"]] <- PercentageFeatureSet(sc_full, pattern="^ATMG")
+# Removing the useless cells.
+sc_full <- subset(sc_full, percent.pt < 5)
+sc_full <- subset(sc_full, percent.mt < 5)
+sc_full$rep_label <- c(sc_full[['rep_label']])
+```
+
+```{r, eval=FALSE}
+sc_full <- Seurat::SCTransform(sc_full, vars.to.regress="percent.pt")
+sc_full <- Seurat::FindVariableFeatures(sc_full, selection.method="vst", nfeatures=2000)
+sc_full <- Seurat::RunPCA(sc_full, npcs = 50, features = Seurat::VariableFeatures(object = sc_full), seed.use = 42)
+sc_full <- Seurat::RunUMAP(sc_full, dims=1:30)
+# sc_full <- Seurat::FindVariableFeatures(sc_full, selection.method="vst", nfeatures=2000)
+sc_full <- Seurat::FindNeighbors(sc_full, reduction='pca', dims=1:30, verbose = TRUE)
+sc_full <- Seurat::FindClusters(sc_full, resolution=1, random.seed = 42, verbose = TRUE)
+```
+
+### PCA (análisis de componentes principales)
+#### Plot de "elbow": muestra la importancia de las componentes principales
+```{r elbow, cache=TRUE}
+# ElbowPlot to determine the dimensionality of the dataset
+clusters <- Seurat::Idents(sc_full)
+
+# Visualization with UMAP, and ACP
+ElbowPlot(sc_full, ndims = 50)
+```
+
+Para el análisis que sigue usamos 30 componentes principales (PCs).
+
+### UMAP
+El UMAP nos da una representación bidimensional de los datos (para fines de visualización).
+El UMAP se computa en base a 30 componentes principales.
+```{r umap_by_cluster, cache=TRUE}
+Seurat::DimPlot(sc_full, reduction="umap", pt.size=0.4)
+```
+
+### Coloreamos por réplica
+```{r umap_by_replica, cache=TRUE}
+Seurat::DimPlot(sc_full, reduction='umap', group.by='rep_label', pt.size=0.2)
+```
+
+Se observa un fuerte efecto réplica.
+
+### ¿Cuántas células de cada réplica pertenecen a cada cluster?
+```{r cells_per_cluster, fig.width=8, fig.height=12, cache=TRUE}
+# Next we build a dataframe that will contain the number of cells in each cluster for each rep
+rep_label_frame  <- data.frame(sc_full[['rep_label']])
+cluster_frame    <- data.frame(clusters)
+df               <- data.frame(list(rep_label_frame, cluster_frame))
+
+nb_clusters                  <- max(as.numeric(clusters))
+# aggregate the dataframe so that we have the number of cells for each cluster for each rep
+aggreg_df                    <- aggregate(df$rep_label, list(df$clusters, df$rep_label), FUN=length, drop=FALSE)
+aggreg_df[is.na(aggreg_df)]  <- 0 # Replace the NA with zeros
+abs_repart_cluster           <- data.frame( 0:(nb_clusters -1), list_reps, check.names=FALSE)
+rownames(abs_repart_cluster) <- 0:(nb_clusters -1)
+abs_repart_cluster[-1]       <- 0 # set all the entries to zero for clarity
+abs_repart_cluster           <- abs_repart_cluster[-1]  # Remove the unwanted col
+colnames(abs_repart_cluster) <- list_reps # set the right names of the columns
+
+for (col in colnames(abs_repart_cluster)) {
+  ind_rep_col <- (aggreg_df$Group.2 == col)
+  abs_repart_cluster[col] <- aggreg_df$x[ind_rep_col]
+}
+
+rel_repart_cluster <- mapply("/", abs_repart_cluster, colSums(abs_repart_cluster))
+plot_list_hist <- list() # vector('list', nrow(rel_repart_cluster))
+group <- unlist(list_reps)
+
+# theme_bw(base_size = 20)
+
+counts_by_cluster_and_rep_df <- matrix(ncol = 3)
+clusters_with_replica_effect <- c()
+clusters_without_replica_effect <- c()
+
+entropy <- function(count_vector) {
+  freq_vector <- count_vector / sum(count_vector)
+  ifelse(!is.na(-sum(log2(freq_vector) * freq_vector)), -sum(log2(freq_vector) * freq_vector), 0)
+}
+
+for (i in 1:nb_clusters) {
+    rel_repart <- rel_repart_cluster[i,]
+    abs_repart <- abs_repart_cluster[i,]
+    rel_value  <- as.numeric(rel_repart)
+    abs_value  <- as.numeric(abs_repart)
+    rel_df     <- data.frame(group, rel_value)
+    abs_df     <- data.frame(group, abs_value)
+  
+    bh <- ggplot(abs_df, aes(x=group, y=abs_value))
+    bh <- bh + geom_bar(width=1, stat="identity" ) 
+    bh <- bh + geom_text(aes(label=abs_value), vjust=1, size=3)
+    bh <- bh + xlab(glue::glue("cluster {i-1}"))
+  
+    plot_list_hist <- c(plot_list_hist, list(bh))
+    # plot_list_hist[[i]] <- bh
+}
+
+ggarrange(plotlist=plot_list_hist)
+```
+
+### Ahora filtramos los clusters con mucho "efecto réplica"
+Para eso calculamos la entropía de la distribución de frecuencia de cada réplica. Si tiene mucho componente de una réplica y poco de las demás, va a dar cercano a cero, entonces podemos usar un umbral de entropía para filtrar los clusters indeseados.
+
+```{r cells_per_cluster_chosen, fig.width=8, fig.height=6, cache=TRUE, echo=FALSE}
+# Next we build a dataframe that will contain the number of cells in each cluster for each rep
+rep_label_frame  <- data.frame(sc_full[['rep_label']])
+cluster_frame    <- data.frame(clusters)
+df               <- data.frame(list(rep_label_frame, cluster_frame))
+
+nb_clusters                  <- max(as.numeric(clusters))
+# aggregate the dataframe so that we have the number of cells for each cluster for each rep
+aggreg_df                    <- aggregate(df$rep_label, list(df$clusters, df$rep_label), FUN=length, drop=FALSE)
+aggreg_df[is.na(aggreg_df)]  <- 0 # Replace the NA with zeros
+abs_repart_cluster           <- data.frame( 0:(nb_clusters -1), list_reps, check.names=FALSE)
+rownames(abs_repart_cluster) <- 0:(nb_clusters -1)
+abs_repart_cluster[-1]       <- 0 # set all the entries to zero for clarity
+abs_repart_cluster           <- abs_repart_cluster[-1]  # Remove the unwanted col
+colnames(abs_repart_cluster) <- list_reps # set the right names of the columns
+
+for (col in colnames(abs_repart_cluster)) {
+  ind_rep_col <- (aggreg_df$Group.2 == col)
+  abs_repart_cluster[col] <- aggreg_df$x[ind_rep_col]
+}
+
+rel_repart_cluster <- mapply("/", abs_repart_cluster, colSums(abs_repart_cluster))
+plot_list_hist <- list() # vector('list', nrow(rel_repart_cluster))
+group <- unlist(list_reps)
+
+counts_by_cluster_and_rep_df <- matrix(ncol = 3)
+clusters_with_replica_effect <- c()
+clusters_without_replica_effect <- c()
+
+entropy <- function(count_vector) {
+  freq_vector <- count_vector / sum(count_vector)
+  ifelse(!is.na(-sum(log2(freq_vector) * freq_vector)), -sum(log2(freq_vector) * freq_vector), 0)
+}
+
+for (i in 1:nb_clusters) {
+    rel_repart <- rel_repart_cluster[i,]
+    abs_repart <- abs_repart_cluster[i,]
+    rel_value  <- as.numeric(rel_repart)
+    abs_value  <- as.numeric(abs_repart)
+    rel_df     <- data.frame(group, rel_value)
+    abs_df     <- data.frame(group, abs_value)
+  
+    if (entropy(abs_df[,2]) < 0.5) {
+        clusters_with_replica_effect <- c(clusters_with_replica_effect, i-1)
+        next
+    }
+     
+    clusters_without_replica_effect <- c(clusters_without_replica_effect, i-1) 
+    # print(i)
+    counts_by_cluster_and_rep_df <- rbind(counts_by_cluster_and_rep_df, abs_df[,2])
+    
+    bh <- ggplot(abs_df, aes(x=group, y=abs_value))
+    bh <- bh + geom_bar(width=1, stat="identity" ) 
+    bh <- bh + geom_text(aes(label=abs_value), vjust=1, size=3)
+    bh <- bh + xlab(glue::glue("cluster {i-1}"))
+  
+    plot_list_hist <- c(plot_list_hist, list(bh))
+    # plot_list_hist[[i]] <- bh
+}
+
+ggarrange(plotlist=plot_list_hist)
+```
+
+### UMAP: sólo clusters sin efecto réplica
+```{r umap_chosen}
+# Visualization of cell specific expression of selected genes in selected clusters
+clusterChosen <- clusters_without_replica_effect # c(1, 2, 5, 8, 9, 10, 11, 13, 15, 16)
+Seurat::DimPlot(subset(x=sc_full, idents=clusterChosen), reduction="umap", pt.size=0.2)
+```
+
+### Comparación de clusters
+Ahora examinamos los genes expresados diferencialmente en los distintos clusters, obtenidos por nosotros y por los autores del paper (de acuerdo a su material suplementario).
+Generamos matrices de contingencia que muestran cuántos genes pertenecen a cada par de clusters, esperando encontrar una matriz rala.
+
+
+```{r contingency_matrix, cache=TRUE}
+library(biomaRt)
+library(dplyr)
+library(readxl)
+
+ensembl <- useMart("plants_mart", dataset = "athaliana_eg_gene", host = "https://plants.ensembl.org")
+
+get_tair_ids <- function(gene_symbols) {
+    tair_ids <- getBM(attributes = c("external_gene_name", "tair_locus"),
+                  filters = "external_gene_name",
+                  values = gene_symbols,
+                  mart = ensembl)
+    tair_ids
+}
+
+cluster_gene_df <- read.csv("gene_markers_2.txt", sep = "\t")
+cluster_sheet_names <- c(
+  "C0C4C10C11 healthy mesophyl", 
+  "C1 responsive epidermal cells",
+  "C2 vascular S cells",
+  "C5",
+  "C8 responsive mesophyl cells",
+  "C9 healthy epidermal cells",
+  "C13",
+  "C16 guard cells"
+)
+
+clusters <- sapply(strsplit(cluster_sheet_names, " "), function(x) x[1])
+
+cluster_names <- character()
+clusters_paper <- list()
+
+all_subcluster <- character()
+
+for (cluster_idx  in seq_along(cluster_sheet_names)) {
+    
+    xls_file = "~/Postdoc/Papers/AT_PST_ScienceDirect_files_06Nov2024_13-40-25.581/1-s2.0-S2590346223002043-mmc5.xlsx"
+    cluster_genes_paper_df <- readxl::read_xlsx(xls_file, sheet = cluster_sheet_names[cluster_idx])
+    
+    cluster <- clusters[cluster_idx]
+    
+    subclusters = na.omit(unique(cluster_genes_paper_df$cluster))
+    # subclusters <- strsplit(cluster_sheet_names[[1]], "C")[[1]] %>% .[2:length(.)] %>% paste0("C", .) 
+    # strsplit(rownames(overlap_matrix)[1], "C")[[1]] %>% .[2:length(.)] %>% paste0("C", .)
+    all_subcluster <- c(all_subcluster, subclusters)
+    
+    # print(unique(cluster_genes_paper_df$cluster))
+    # print(subclusters)
+    
+    for (subcluster in subclusters) {
+        
+        valid_rows <- !is.na(cluster_genes_paper_df['Gene model'])[,1]
+        cluster_genes_paper_df <- cluster_genes_paper_df[valid_rows,]
+        cluster_genes_paper_df <- cluster_genes_paper_df %>% filter(cluster == subcluster)
+        genes <- cluster_genes_paper_df$`Gene model`
+        
+        clusters_paper <- c(clusters_paper, list(genes))
+    
+        # print(subcluster)
+        # print(genes)#[1:sum(valid_rows)])
+    }
+}
+
+# print(glue::glue("All subclusters are {length(all_subcluster)}"))
+
+clusters_mine = sapply(1:23, function(i) cluster_gene_df %>% filter(cluster == i) %>% rownames)
+
+contingency_matrix <- matrix(0, nrow = length(clusters_paper), ncol = length(clusters_mine),
+                         dimnames = list(names(clusters_paper), names(clusters_mine)))
+
+for (i in seq_along(all_subcluster)) {
+  for (j in seq_along(clusters_mine)) {
+    
+    genes_paper <- clusters_paper[[i]]
+    genes_mine <- clusters_mine[[j]]
+    
+    tair_ids <- get_tair_ids(genes_mine)$tair_locus
+    overlap <- length(intersect(genes_paper, tair_ids)) #  / length(tair_ids)
+    contingency_matrix[i, j] <- overlap
+  }
+}
+```
+
+```{r} 
+library(knitr)
+rownames(contingency_matrix) <- all_subcluster
+colnames(contingency_matrix) <- paste0("C", 1:23)
+
+suma_filas <- rowSums(contingency_matrix)
+suma_columnas <- colSums(contingency_matrix)
+
+# Reordenar filas y columnas en orden descendente
+# ordered_contingency_matrix <- contingency_matrix[order(-suma_filas), order(-suma_columnas)]
+
+kable(contingency_matrix)
+```
+
+### Filtramos nuevamente los clusters con efecto réplica
+```{r}
+reduced_cont_matrix <- contingency_matrix[, clusters_without_replica_effect %>% paste0("C", .)]
+suma_filas <- rowSums(reduced_cont_matrix)
+suma_columnas <- colSums(reduced_cont_matrix)
+
+# Reordenar filas y columnas en orden descendente
+ordered_red_contingency_matrix <- reduced_cont_matrix[order(-suma_filas), order(-suma_columnas)]
+
+kable(ordered_red_contingency_matrix)
+```
