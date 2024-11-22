@@ -1,5 +1,8 @@
 # Single-cell RNA-Seq analysis pipeline
-Pipeline for the analysis of single cell RNA-seq data
+Pipeline for the analysis of single cell RNA-seq data (based on the R pipeline from https://github.com/Bastien-mva/pipeline_seurat_monocle )
+
+## Data
+Data for _Arabidopsis thaliana_ inoculated with _Pst_ can be retrieved from: https://entrepot.recherche.data.gouv.fr/dataset.xhtml?persistentId=doi:10.57745/CKVGIN.
 
 ## Environment
 
