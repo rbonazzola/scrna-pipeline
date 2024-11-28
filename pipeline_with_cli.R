@@ -3,8 +3,6 @@ library(Seurat)
 library(ggplot2)
 library(patchwork)
 library(ggpubr)
-library(monocle3)
-library(SeuratWrappers)
 library(ff)
 library(argparse)
 
@@ -193,92 +191,3 @@ Seurat_obj <- readRDS(file=RDS_FILENAME)
 nbClusters <- length(summary(Idents(Seurat_obj)))
 print('The clusters are: ')
 print(summary(Idents(Seurat_obj)))
-
-########################################################################################################################
-pdf(file=glue::glue('{args$output_folder}/first_plots_{basename(RDS_FILENAME)}{paste(as.character(clusterChosen), collapse="-")}.pdf'))
-
-Seurat_obj[['clusters']]        <- Idents(Seurat_obj)
-Seurat_obj                      <- subset(Seurat_obj, clusters %in% clusterChosen)
-Seurat_obj@active.assay         <- 'RNA'
-
-# From Seurat object to Monocle object
-cds                             <- SeuratWrappers::as.cell_data_set(Seurat_obj)
-cds                             <- monocle3::estimate_size_factors(cds)
-rowData(cds)$gene_name          <- rownames(cds)
-rowData(cds)$gene_short_name    <- rowData(cds)$gene_name
-cds                             <- monocle3::preprocess_cds(cds, num_dim=100)
-## Cluster the cells and compute the partitions. We will change the cluster with Seurat clusters.
-cds                             <- monocle3::cluster_cells(cds)
-cds@clusters[['UMAP']]$clusters <- Idents(Seurat_obj) ## Assign the clusters of the cds to the Seurat clusters
-cds                             <- monocle3::learn_graph(cds) # Learn the graph, takes some time
-
-## Plot the cells, according to their  clusters.
-monocle3::plot_cells(cds, color_cells_by='cluster', label_groups_by_cluster=TRUE, labels_per_group=0)
-
-get_earliest_principal_node <- function (cds, time_bin="130-170") {
-  closest_vertex <- cds@principal_graph_aux[["UMAP"]]$pr_graph_cell_proj_closest_vertex
-  closest_vertex <- as.matrix(closest_vertex[colnames(cds), ])
-  root_pr_nodes  <- igraph::V(principal_graph(cds)[["UMAP"]])$name[as.numeric(names(which.max(table(closest_vertex))))]
-  root_pr_nodes
-}
-
-# cds <- monocle3::order_cells(cds)
-## Remove the line below if you want to choose the node yourself, and uncomment the line above.
-cds <- monocle3::order_cells(cds, root_pr_nodes=get_earliest_principal_node(cds))
-
-# plot the cells by pseudotime
-monocle3::plot_cells(cds, color_cells_by='pseudotime')
-
-nbClusters <- length(summary(Idents(Seurat_obj)))
-
-print(glue::glue('There are {nbClusters} clusters in total.'))
-print(glue::glue('The clusters are: {clusterChosen}'))
-
-nbClustersChosen <- length(summary(Idents(Seurat_obj)))
-
-#### IF YOU WANT TO GET ALL THE CLUSTERS ALREADY CHOSEN BEFORE RUN THIS
-subClusterChosen <- clusterChosen
-# get only the wanted clusters the cell_data_set. It will be stored in sub_cds
-BoolInChosenCluster <- as.vector(cds@clusters[['UMAP']][3][1]$clusters) %in% subClusterChosen
-
-clusters                        <- as.vector(cds@clusters[['UMAP']][3][1]$clusters)
-clusterIdOfCellsInChosenCluster <- clusters[clusters %in% subClusterChosen]
-cellsInChosenCluster            <- row.names(subset(pData(cds),BoolInChosenCluster))
-sub_cds                         <- cds[, cellsInChosenCluster]
-
-## Takes a lot of time
-sub_ciliated_cds_pr_test_res <- getCiliatedCds(sub_cds)
-
-qValueChosen        <- 5e-10 # 0.0000000005
-geneModuleAndAggMat <- getAggregatedMatrix(sub_cds, sub_ciliated_cds_pr_test_res, clusterIdOfCellsInChosenCluster, qValueChosen)
-gene_module_df      <- geneModuleAndAggMat[[1]]
-agg_mat             <- geneModuleAndAggMat[[2]]
-showAggregatedMat(agg_mat)
-dev.off()
-
-########################################################################################################################
-## If you want to select genes and plot their expression levels in the different cells
-pdf(file=paste('output/first_plots_', rdsFile, paste(as.character(clusterChosen), collapse="-"), '.pdf', sep=""))
-
-plot_cells(
-  cds, 
-  genes=c("AT2G23770","SC-AT1G78370","AT2G39518","MC2-AT3G46230","MC2-AT3G56880", "AT3G16570", "AT5G42980", "AT2G33380"),
-  show_trajectory_graph=FALSE,
-  label_cell_groups=FALSE,
-  label_leaves=FALSE
-)
-
-## If you want to plot mean expression of genes (here Marker_cell) in  different clusters
-Marker_cell <- read.csv("genes_to_plot.txt", header = FALSE)[,1]
-
-plot_genes_by_group(
-  cds,
-  Marker_cell,
-  group_cells_by="clusters",
-  ordering_type="cluster_row_col",
-  max.size=3
-)
-
-dev.off()
-
-get_citations(cds)
