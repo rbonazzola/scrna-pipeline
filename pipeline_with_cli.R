@@ -17,7 +17,8 @@ parser$add_argument("--name_rep", default = "WT_rep123", help = "Name of the rep
 parser$add_argument("--data_dir", default = "data/", help = "Directory containing input data (default: current directory)")
 parser$add_argument("--rds_filename", default = NULL, help = "Path to save the RDS file (default: auto-generated)")
 parser$add_argument("--overwrite_rds", action = "store_true", help = "Overwrite existing RDS file (default: FALSE)")
-parser$add_argument("--output_folder", default="output/", help = "Folder where output is stored")
+parser$add_argument("--output_folder", default=NULL, help = "Folder where output is stored")
+parser$add_argument("--resolution", default=0.5, help = "Resolution parameter for clustering algorithm")
 
 parser$add_argument("--pdf_width", type = "double", default = 10, help = "Width of the output PDF plots (default: 10)")
 parser$add_argument("--pdf_height", type = "double", default = 10, help = "Height of the output PDF plots (default: 10)")
@@ -35,6 +36,10 @@ entropy <- function(count_vector) {
 # name of the output pdf file and output rds file
 NAME_REP      <- args$name_rep
 DATA_DIR      <- args$data_dir
+
+if (is.null(args$output_folder)) {
+   args$output_folder <- glue::glue("output_{args$random_seed}_{args$resolution}")
+}
 
 RDS_FILENAME <- ifelse(is.null(args$rds_filename), glue::glue("{args$output_folder}/sc_full{NAME_REP}__seed{args$random_seed}.rds"), args$rds_filename)
 
@@ -91,7 +96,7 @@ if (!file.exists(RDS_FILENAME) || OVERWRITE_RDS) {
   sc_full <- Seurat::RunUMAP(sc_full, dims=1:30)
   # sc_full <- Seurat::FindVariableFeatures(sc_full, selection.method="vst", nfeatures=2000)
   sc_full <- Seurat::FindNeighbors(sc_full, reduction='pca', dims=1:30, verbose = TRUE)
-  sc_full <- Seurat::FindClusters(sc_full, resolution=1, random.seed = args$random_seed, verbose = TRUE)
+  sc_full <- Seurat::FindClusters(sc_full, resolution=args$resolution, random.seed = args$random_seed, verbose = TRUE)
   saveRDS(sc_full, file=RDS_FILENAME)
 } else {
   sc_full <- readRDS(RDS_FILENAME)
