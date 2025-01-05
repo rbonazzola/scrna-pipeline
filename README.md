@@ -20,3 +20,9 @@ conda install bioconda::r-seurat
 conda install bioconda::r-monocle3
 
 ```
+
+Alternatively, you can use a pre-made [Docker image](https://hub.docker.com/r/rbonazzola/scrna) which you can download from DockerHub.
+
+```bash
+docker pull rbonazzola/scrna
+```
