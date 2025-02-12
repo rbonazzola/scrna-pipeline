@@ -22,7 +22,7 @@ def query_for_go_terms(genes):
         organism="athaliana",
         query=list(genes),
         sources=["GO:BP", "GO:MF", "GO:CC", "KEGG"],
-        no_iea=False,         # Include electronic annotations?
+        no_iea=False, # include electronic annotations
         user_threshold=0.05,
     )
     

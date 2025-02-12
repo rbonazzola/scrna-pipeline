@@ -7,7 +7,7 @@ library(monocle3)
 library(SeuratWrappers)
 library(ff)
 
-setwd("~/Postdoc/scRNA/pipeline_seurat_monocle/")
+setwd("~/Postdoc/scRNA/scrna-pipeline/")
 source(file="utils.R")
 
 ## list of cell type markers
@@ -21,9 +21,9 @@ source(file="utils.R")
 
 # name of the output pdf file and output rds file
 NAME_REP      <- "WT_rep123"
-DATA_DIR      <- "."
+DATA_DIR      <- "data"
 RDS_FILENAME  <- glue::glue("output/sc_full{NAME_REP}.rds")
-OVERWRITE_RDS <- TRUE
+OVERWRITE_RDS <- FALSE
 
 pdf(glue::glue('plots_{NAME_REP}.pdf'), width=10, height=10)
 
@@ -35,7 +35,7 @@ list_reps <- list("rep_1", "rep_2", "rep_3")
 
 if (!file.exists(RDS_FILENAME) || OVERWRITE_RDS) {
 
-  organize_files_in_folders()
+  # organize_files_in_folders()
   # import the data
   sc.data_WT_rep1 <- Read10X(data.dir = glue::glue("{DATA_DIR}/WT1"))
   sc.data_WT_rep2 <- Read10X(data.dir = glue::glue("{DATA_DIR}/WT2"))
